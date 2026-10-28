@@ -42,6 +42,9 @@
   td{padding:8px 10px; border-bottom:1px solid #EEF0F2; white-space:nowrap;}
   .badge-in{background:#E4F4EC; color:var(--success); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:700;}
   .badge-out{background:#FCEBEA; color:var(--danger); border-radius:999px; padding:2px 10px; font-size:12px; font-weight:700;}
+  .event-history .event-actions{position:sticky;left:0;z-index:1;background:var(--surface);min-width:130px;box-shadow:2px 0 4px #25304c08;}
+  .event-history th.event-actions{background:#F5F7FD;}
+  .event-history .event-memo{white-space:normal;overflow-wrap:anywhere;min-width:180px;max-width:420px;}
   @media print{
     .no-print{display:none !important;}
     body{background:#fff;}
@@ -159,8 +162,8 @@
     <div class="card p-4">
       <div class="text-sm font-bold mb-3">입출고 전체 내역</div>
       <div class="overflow-x-auto">
-        <table>
-          <thead><tr><th>구분</th><th>일시</th><th>품목</th><th>PLT</th><th>하차비</th><th>메모</th><th class="no-print">관리</th></tr></thead>
+        <table class="event-history">
+          <thead><tr><th class="event-actions no-print">삭제 / 관리</th><th>구분</th><th>일시</th><th>품목</th><th>PLT</th><th>하차비</th><th>메모</th></tr></thead>
           <tbody id="allEventsBody"></tbody>
         </table>
       </div>
@@ -452,6 +455,7 @@ function addEvent(type){
 
   document.getElementById(prefix+'Qty').value = '';
   document.getElementById(prefix+'Memo').value = '';
+  if(type === 'out') document.getElementById('outPlanned').checked = false;
 
   queueSave();
   renderAll();
@@ -663,7 +667,7 @@ function renderDashboard(){
       <td class="tabular">${e.date} ${e.time||''}</td>
       <td>${e.product}</td>
       <td class="tabular">${quantityLabel(e)}</td>
-      <td class="tabular">${isCompleted(e) ? won(handlingFee(e)) : '완료 시 반영'}</td>
+      <td class="tabular">${isCompleted(e) ? won(handlingFee(e)) : '-'}</td>
       <td>${e.memo||''}</td>
     </tr>`).join('') || `<tr><td colspan="6" class="text-center text-[var(--ink-soft)] py-6">등록된 내역이 없습니다.</td></tr>`;
 }
@@ -678,13 +682,13 @@ function renderEventsTable(){
   const body = document.getElementById('allEventsBody');
   body.innerHTML = all.map(e => `
     <tr>
+      <td class="event-actions no-print"><button onclick="deleteEvent('${e.id}')" class="btn-danger px-3 py-1 rounded text-xs font-bold">삭제</button>${e.status==='planned' ? `<button onclick="completeShipment('${e.id}')" class="btn-ghost px-2 py-1 rounded ml-2 text-xs font-bold">출고 완료</button>` : ''}</td>
       <td><span class="${e.type==='in'?'badge-in':'badge-out'}">${eventLabel(e)}</span></td>
       <td class="tabular">${e.date} ${e.time||''}</td>
       <td>${e.product}</td>
       <td class="tabular">${quantityLabel(e)}</td>
-      <td class="tabular">${isCompleted(e) ? won(handlingFee(e)) : '완료 시 반영'}</td>
-      <td>${e.memo||''}</td>
-      <td class="no-print">${e.status==='planned' ? `<button onclick="completeShipment('${e.id}')" class="btn-primary px-2 py-1 rounded mr-2 text-xs font-bold">출고 완료</button>` : ''}<button onclick="deleteEvent('${e.id}')" class="text-[var(--danger)] text-xs font-bold">삭제</button></td>
+      <td class="tabular">${isCompleted(e) ? won(handlingFee(e)) : '-'}</td>
+      <td class="event-memo">${e.memo||''}</td>
     </tr>`).join('') || `<tr><td colspan="7" class="text-center text-[var(--ink-soft)] py-6">등록된 내역이 없습니다.</td></tr>`;
 }
 
