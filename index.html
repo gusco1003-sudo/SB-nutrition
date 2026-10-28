@@ -84,6 +84,7 @@
       <div class="text-xs text-[var(--ink-soft)]" id="gaugeSubtext"></div>
     </div>
     <div id="palletGauge" class="flex flex-wrap gap-1.5"></div>
+    <div id="plannedShipmentSummary" class="text-sm mt-3"></div>
   </div>
 
   <!-- 탭 네비게이션 -->
@@ -150,6 +151,7 @@
           <label class="text-xs text-[var(--ink-soft)] col-span-1">PLT 수량<input type="number" min="1" id="outQty" class="w-full mt-1"></label>
           <label class="text-xs text-[var(--ink-soft)] col-span-1">메모<input type="text" id="outMemo" placeholder="선택입력" class="w-full mt-1"></label>
         </div>
+        <label class="text-xs block mt-3"><input type="checkbox" id="outPlanned"> 출고 예정으로 등록 (완료 전 재고·정산 차감 없음)</label>
         <button onclick="addEvent('out')" class="btn-primary w-full mt-3 py-2 rounded-lg font-bold text-sm">출고 등록 (PLT당 하차비 5,000원 자동계산)</button>
       </div>
     </div>
@@ -444,7 +446,8 @@ function addEvent(type){
 
   state.events.push({
     id: 'e'+Date.now()+Math.random().toString(36).slice(2,6),
-    type, date, time, product, qty, memo
+    type, date, time, product, qty, memo,
+    ...(type === 'out' && document.getElementById('outPlanned').checked ? {status:'planned'} : {})
   });
 
   document.getElementById(prefix+'Qty').value = '';
@@ -514,10 +517,33 @@ function resetAllData(){
 }
 
 // ---------- Calculations ----------
+// stockQty: physical pallet movement, independent of the original handling quantity.
+// Planned shipments affect neither physical stock nor invoicing until confirmed.
+function stockQty(e){ return Number(e.stockQty ?? e.qty) || 0; }
+function isCompleted(e){ return e.status !== 'planned'; }
+function eventLabel(e){ return e.status === 'planned' ? '출고 예정' : (e.type === 'in' ? '입고' : '출고'); }
+function quantityLabel(e){
+  return e.stockQty !== undefined && Number(e.stockQty) !== Number(e.qty)
+    ? stockQty(e) + ' (부분 출고 · 메모 참조)' : e.qty;
+}
+function handlingFee(e){ return isCompleted(e) ? e.qty * state.settings.unloadFee : 0; }
+function completeShipment(id){
+  const e = state.events.find(e => e.id === id && e.type === 'out' && e.status === 'planned');
+  if(!e) return;
+  if(stockQty(e) > currentStock()){ alert('현재 재고보다 출고 수량이 많습니다.'); return; }
+  if(!confirm('실제 출고가 완료되었습니까? 완료 처리하면 재고와 정산에 반영됩니다.')) return;
+  e.status = 'completed';
+  e.date = todayStr();
+  e.time = new Date().toLocaleTimeString('en-GB', {timeZone:'Asia/Seoul',hour:'2-digit',minute:'2-digit'});
+  e.completedAt = Date.now();
+  e.memo = (e.memo || '') + ' | 실제 출고 완료 확인';
+  queueSave();
+  renderAll();
+}
 function currentStock(){
   let bal = 0;
   state.events.slice().sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time)).forEach(e=>{
-    bal += e.type === 'in' ? e.qty : -e.qty;
+    if(isCompleted(e)) bal += e.type === 'in' ? stockQty(e) : -stockQty(e);
   });
   return bal;
 }
@@ -528,7 +554,8 @@ function calcStorage(fromDate, toDate){
   const inDeltas = {};
   const outDeltas = {};
   state.events.forEach(e=>{
-    const d = e.type === 'in' ? (e.qty || 0) : -(e.qty || 0);
+    if(!isCompleted(e)) return;
+    const d = e.type === 'in' ? stockQty(e) : -stockQty(e);
     if(!d) return;
     if(d > 0) inDeltas[e.date] = (inDeltas[e.date] || 0) + d;
     else outDeltas[e.date] = (outDeltas[e.date] || 0) + d;
@@ -607,6 +634,11 @@ function renderGauge(){
     gauge.appendChild(chip);
   }
   document.getElementById('gaugeSubtext').textContent = stock + ' PLT 보관중 · 1PLT = 900원/일';
+  const planned = state.events.filter(e=>e.type==='out' && !isCompleted(e));
+  const plannedQty = planned.reduce((sum,e)=>sum+stockQty(e),0);
+  const summary = document.getElementById('plannedShipmentSummary');
+  summary.textContent = planned.length
+    ? '출고 예정 ' + plannedQty + ' PLT · 완료 후 예상 재고 ' + (stock - plannedQty) + ' PLT (입출고 관리에서 완료 처리)' : '';
 }
 
 function renderDashboard(){
@@ -618,8 +650,8 @@ function renderDashboard(){
 
   const now = new Date();
   const ym = kstToday().slice(0,7);
-  const inMonth = state.events.filter(e=>e.type==='in' && e.date.startsWith(ym)).reduce((s,e)=>s+e.qty,0);
-  const outMonth = state.events.filter(e=>e.type==='out' && e.date.startsWith(ym)).reduce((s,e)=>s+e.qty,0);
+  const inMonth = state.events.filter(e=>isCompleted(e) && e.type==='in' && e.date.startsWith(ym)).reduce((s,e)=>s+stockQty(e),0);
+  const outMonth = state.events.filter(e=>isCompleted(e) && e.type==='out' && e.date.startsWith(ym)).reduce((s,e)=>s+stockQty(e),0);
   document.getElementById('statInMonth').textContent = inMonth + ' PLT';
   document.getElementById('statOutMonth').textContent = outMonth + ' PLT';
 
@@ -627,11 +659,11 @@ function renderDashboard(){
   const body = document.getElementById('recentEventsBody');
   body.innerHTML = recent.map(e => `
     <tr>
-      <td><span class="${e.type==='in'?'badge-in':'badge-out'}">${e.type==='in'?'입고':'출고'}</span></td>
+      <td><span class="${e.type==='in'?'badge-in':'badge-out'}">${eventLabel(e)}</span></td>
       <td class="tabular">${e.date} ${e.time||''}</td>
       <td>${e.product}</td>
-      <td class="tabular">${e.qty}</td>
-      <td class="tabular">${won(e.qty * state.settings.unloadFee)}</td>
+      <td class="tabular">${quantityLabel(e)}</td>
+      <td class="tabular">${isCompleted(e) ? won(handlingFee(e)) : '완료 시 반영'}</td>
       <td>${e.memo||''}</td>
     </tr>`).join('') || `<tr><td colspan="6" class="text-center text-[var(--ink-soft)] py-6">등록된 내역이 없습니다.</td></tr>`;
 }
@@ -646,13 +678,13 @@ function renderEventsTable(){
   const body = document.getElementById('allEventsBody');
   body.innerHTML = all.map(e => `
     <tr>
-      <td><span class="${e.type==='in'?'badge-in':'badge-out'}">${e.type==='in'?'입고':'출고'}</span></td>
+      <td><span class="${e.type==='in'?'badge-in':'badge-out'}">${eventLabel(e)}</span></td>
       <td class="tabular">${e.date} ${e.time||''}</td>
       <td>${e.product}</td>
-      <td class="tabular">${e.qty}</td>
-      <td class="tabular">${won(e.qty * state.settings.unloadFee)}</td>
+      <td class="tabular">${quantityLabel(e)}</td>
+      <td class="tabular">${isCompleted(e) ? won(handlingFee(e)) : '완료 시 반영'}</td>
       <td>${e.memo||''}</td>
-      <td class="no-print"><button onclick="deleteEvent('${e.id}')" class="text-[var(--danger)] text-xs font-bold">삭제</button></td>
+      <td class="no-print">${e.status==='planned' ? `<button onclick="completeShipment('${e.id}')" class="btn-primary px-2 py-1 rounded mr-2 text-xs font-bold">출고 완료</button>` : ''}<button onclick="deleteEvent('${e.id}')" class="text-[var(--danger)] text-xs font-bold">삭제</button></td>
     </tr>`).join('') || `<tr><td colspan="7" class="text-center text-[var(--ink-soft)] py-6">등록된 내역이 없습니다.</td></tr>`;
 }
 
@@ -702,8 +734,8 @@ function renderSettlement(){
   const from = document.getElementById('settleFrom').value || getFirstEventDate();
   const to = document.getElementById('settleTo').value || todayStr();
 
-  const inEvents = state.events.filter(e => e.type==='in' && e.date>=from && e.date<=to);
-  const outEvents = state.events.filter(e => e.type==='out' && e.date>=from && e.date<=to);
+  const inEvents = state.events.filter(e => isCompleted(e) && e.type==='in' && e.date>=from && e.date<=to);
+  const outEvents = state.events.filter(e => isCompleted(e) && e.type==='out' && e.date>=from && e.date<=to);
   const inQty = inEvents.reduce((s,e)=>s+e.qty,0);
   const outQty = outEvents.reduce((s,e)=>s+e.qty,0);
   const inFee = inQty * state.settings.unloadFee;
